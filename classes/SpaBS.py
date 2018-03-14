@@ -90,7 +90,7 @@ class SpaBS(object):
         self.n_band = n_band
         self.y_x = []
 
-    def X_sort(self, X, C=0.5):
+    def X_sort(self, X, C=0.05):
         """
         :param X:通过ksvd算法得到的系数矩阵
         :param Xs:按降序排列的前k个索引矩阵
@@ -101,7 +101,7 @@ class SpaBS(object):
         self.k = n_row * C
         self.Xs = []
         for i in range(n_column):
-            # 矩阵self.X存储的是索引
+            # 矩阵self.Xs存储的是索引
             self.X[:, i] = sorted(np.argsort(-X[:, i]),reverse=True)
             self.Xs[:,i] = self.X[0:self.k, i]   #self.X[n_row-self.k:n_row-1, i]
         return self
