@@ -1,11 +1,11 @@
 # Code Authors: Pan Ji,     University of Adelaide,         pan.ji@adelaide.edu.au
-#               Tong Zhang, Australian National University, tong.zhang@anu.edu.au
+#              Tong Zhang, Australian National University, tong.zhang@anu.edu.au
 # Copyright Reserved!
 from __future__ import division, print_function, absolute_import
 
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 from tensorflow.contrib import layers
 from sklearn import cluster
 from munkres import Munkres
@@ -20,6 +20,7 @@ class DSC_NET(object):
     def __init__(self, n_input, kernel_size, n_hidden, reg_const1=1.0, reg_const2=1.0, reg=None, batch_size=256,
                  max_iter=10, denoise=False, model_path=None, logs_path='./logs'):
         # n_hidden is a arrary contains the number of neurals on every layer
+        tf.reset_default_graph()
         self.n_input = n_input
         self.n_hidden = n_hidden
         self.reg = reg
@@ -27,7 +28,38 @@ class DSC_NET(object):
         self.kernel_size = kernel_size
         self.iter = 0
         self.batch_size = batch_size
-        weights = self._initialize_weights()
+        # weights = self._initialize_weights()
+        # # Variable initialization
+        weights = dict()
+        with tf.variable_scope('weight', reuse=tf.AUTO_REUSE):
+            # shape means [filter_height, filter_width, in_channels, out_channels]
+            weights['enc_w0'] = tf.get_variable("enc_w0",
+                                                    shape=[self.kernel_size[0], self.kernel_size[0], 1,
+                                                           self.n_hidden[0]],
+                                                    initializer=layers.xavier_initializer_conv2d(),
+                                                    regularizer=self.reg)
+            ## 增加卷积层数 ##
+            weights['enc_w1'] = tf.get_variable("enc_w1",
+                                                shape=[self.kernel_size[1], self.kernel_size[1], self.n_hidden[0],
+                                                       self.n_hidden[1]],
+                                                initializer=layers.xavier_initializer_conv2d(),
+                                                regularizer=self.reg)
+            weights['enc_b0'] = tf.Variable(tf.zeros([self.n_hidden[0]], dtype=tf.float32))
+            weights['enc_b1'] = tf.Variable(tf.zeros([self.n_hidden[1]], dtype=tf.float32))
+
+            weights['dec_w0'] = tf.get_variable("dec_w0",
+                                                    shape=[self.kernel_size[1], self.kernel_size[1], self.n_hidden[0],
+                                                           self.n_hidden[1]],
+                                                    initializer=layers.xavier_initializer_conv2d(),
+                                                    regularizer=self.reg)
+            weights['dec_w1'] = tf.get_variable("dec_w1",
+                                                shape=[self.kernel_size[0], self.kernel_size[0],
+                                                       1, self.n_hidden[0]],
+                                                initializer=layers.xavier_initializer_conv2d(),
+                                                regularizer=self.reg)
+            weights['dec_b0'] = tf.Variable(tf.zeros([1], dtype=tf.float32))
+            weights['dec_b1'] = tf.Variable(tf.zeros([1], dtype=tf.float32))
+
         self.max_iter = max_iter
         # model
         self.x = tf.placeholder(tf.float32, [None, self.n_input[0], self.n_input[1], 1])
@@ -67,39 +99,67 @@ class DSC_NET(object):
         self.sess.run(self.init)
         self.summary_writer = tf.summary.FileWriter(logs_path, graph=tf.get_default_graph())
 
-    def _initialize_weights(self):
-        all_weights = dict()
-        all_weights['enc_w0'] = tf.get_variable("enc_w0",
-                                                shape=[self.kernel_size[0], self.kernel_size[0], 1, self.n_hidden[0]],
-                                                initializer=layers.xavier_initializer_conv2d(), regularizer=self.reg)
-        all_weights['enc_b0'] = tf.Variable(tf.zeros([self.n_hidden[0]], dtype=tf.float32))
-
-        all_weights['dec_w0'] = tf.get_variable("dec_w0",
-                                                shape=[self.kernel_size[0], self.kernel_size[0], 1, self.n_hidden[0]],
-                                                initializer=layers.xavier_initializer_conv2d(), regularizer=self.reg)
-        all_weights['dec_b0'] = tf.Variable(tf.zeros([1], dtype=tf.float32))
-        return all_weights
+    # # this function will raise an exception in higher version Tensorflow
+    # def _initialize_weights(self):
+    #     all_weights = dict()
+    #     with tf.variable_scope('weight', reuse=tf.AUTO_REUSE):
+    #         all_weights['enc_w0'] = tf.get_variable("enc_w0",
+    #         shape=[self.kernel_size[0], self.kernel_size[0], 1, self.n_hidden[0]],
+    #         initializer=layers.xavier_initializer_conv2d(), regularizer=self.reg)
+    #         all_weights['enc_b0'] = tf.Variable(tf.zeros([self.n_hidden[0]], dtype=tf.float32))
+    #
+    #         all_weights['dec_w0'] = tf.get_variable("dec_w0",
+    #         shape=[self.kernel_size[0], self.kernel_size[0], 1, self.n_hidden[0]],
+    #         initializer=layers.xavier_initializer_conv2d(), regularizer=self.reg)
+    #         all_weights['dec_b0'] = tf.Variable(tf.zeros([1], dtype=tf.float32))
+    #     return all_weights
 
     # Building the encoder
     def encoder(self, x, weights):
         shapes = []
         # Encoder Hidden layer with relu activation #1
         shapes.append(x.get_shape().as_list())
-        layer1 = tf.nn.bias_add(tf.nn.conv2d(x, weights['enc_w0'], strides=[1, 2, 2, 1], padding='SAME'),
+
+        layer1 = tf.nn.bias_add(tf.nn.conv2d(x, weights['enc_w0'], strides=[1, 1, 1, 1], padding='SAME'),
                                 weights['enc_b0'])
         layer1 = tf.nn.relu(layer1)
-        return layer1, shapes
+        # max_pool
+        layer1 = tf.nn.max_pool(layer1, ksize=[1, 2, 2, 1], strides=[1, 1, 1, 1], padding='SAME')
+
+        layer2 = tf.nn.bias_add(tf.nn.conv2d(layer1, weights['enc_w1'],strides=[1, 1, 1, 1], padding='SAME'),
+                                weights['enc_b1'])
+        layer2 = tf.nn.relu(layer2)
+        layer2 = tf.nn.max_pool(layer2, ksize=[1, 2, 2, 1], strides=[1, 1, 1, 1], padding='SAME')
+        shapes.append(layer1.get_shape().as_list())
+
+        return layer2, shapes
 
     # Building the decoder
     def decoder(self, z, weights, shapes):
         # Encoder Hidden layer with relu activation #1
-        shape_de1 = shapes[0]
-        layer1 = tf.add(tf.nn.conv2d_transpose(z, weights['dec_w0'], tf.stack(
-            [tf.shape(self.x)[0], shape_de1[1], shape_de1[2], shape_de1[3]]), \
-                                               strides=[1, 2, 2, 1], padding='SAME'), weights['dec_b0'])
+        shape_de1 = shapes[1]
+
+        # conv2d_transpose parameter : value,filter, output_shape,strides,padding="SAME",data_format="NHWC",name=None
+        layer1 = tf.add(
+                    tf.nn.conv2d_transpose(
+                        z, weights['dec_w0'],
+                        tf.stack(
+                            [tf.shape(self.x)[0], shape_de1[1], shape_de1[2], shape_de1[3]]
+                        ),
+                        strides=[1, 1, 1, 1],
+                        padding='SAME'
+                    ),
+                weights['dec_b0']
+        )
         layer1 = tf.nn.relu(layer1)
 
-        return layer1
+        shape_de2 = shapes[0]
+        layer2 = tf.add(tf.nn.conv2d_transpose(layer1, weights['dec_w1'], tf.stack(
+            [tf.shape(self.x)[0], shape_de2[1], shape_de2[2], shape_de2[3]]),
+                                               strides=[1, 1, 1, 1], padding='SAME'), weights['dec_b1'])
+        layer2 = tf.nn.relu(layer2)
+
+        return layer2
 
     def selfexpressive_moduel(self, batch_size):
 
@@ -213,11 +273,12 @@ class DSC_NET(object):
             for iter_ft in range(self.max_iter):
                 iter_ft = iter_ft + 1
                 C, l1_cost, l2_cost, total_loss = self.finetune_fit(img_transposed, learning_rate)
-                print('# epoch %s' % (iter_ft))
+                #print('# epoch %s' % (iter_ft))
                 all_loss.append(total_loss)
             C = self.thrC(C, alpha)
             y_x, CKSym_x = self.post_proC(C, n_cluster, 1, 4)
             print(all_loss)
+            np.savez('loss.npz', loss=all_loss)
             return y_x
                 # all_loss.append(total_loss)
                 # if iter_ft % display_step == 0:
@@ -268,86 +329,3 @@ class DSCBS(object):
         self.bands = bands
         return self.bands
 
-
-# if __name__ == '__main__':
-#     from Toolbox.Preprocessing import Processor
-#     from sklearn.preprocessing import minmax_scale
-#
-#     root = 'F:\\Python\\HSI_Files\\'
-#     # im_, gt_ = 'SalinasA_corrected', 'SalinasA_gt'
-#     im_, gt_ = 'Indian_pines_corrected', 'Indian_pines_gt'
-#     # im_, gt_ = 'Pavia', 'Pavia_gt'
-#     # im_, gt_ = 'Botswana', 'Botswana_gt'
-#     # im_, gt_ = 'KSC', 'KSC_gt'
-#
-#     img_path = root + im_ + '.mat'
-#     gt_path = root + gt_ + '.mat'
-#     print(img_path)
-#
-#     p = Processor()
-#     img, gt = p.prepare_data(img_path, gt_path)
-#     # Img, Label = Img[:256, :, :], Label[:256, :]
-#     n_row, n_column, n_band = img.shape
-#     train_inx, test_idx = p.get_tr_tx_index(p.get_correct(img, gt)[1], test_size=0.9)
-#
-#     img_train = minmax_scale(img.reshape(n_row * n_column, n_band)).reshape((n_row, n_column, n_band))
-#     # img_train = np.transpose(img_train, axes=(2, 0, 1))  # Img.transpose()
-#     # img_train = np.reshape(img_train, (n_band, n_row, n_column, 1))
-#
-#     n_input = [n_row, n_column]
-#     kernel_size = [11]
-#     n_hidden = [16]
-#     batch_size = n_band
-#     model_path = './pretrain-model-COIL20/model.ckpt'
-#     ft_path = './pretrain-model-COIL20/model.ckpt'
-#     logs_path = './pretrain-model-COIL20/logs'
-#
-#     num_class = 5  # how many class we sample
-#     batch_size_test = n_band
-#
-#     iter_ft = 0
-#     ft_times = 50
-#     display_step = 1
-#     alpha = 0.04
-#     learning_rate = 1e-3
-#
-#     reg1 = 1e-4
-#     reg2 = 150.0
-#     kwargs = {'n_input': n_input, 'n_hidden': n_hidden, 'reg_const1': reg1, 'reg_const2': reg2,
-#               'kernel_size': kernel_size,'batch_size': batch_size_test, 'model_path': model_path, 'logs_path': logs_path}
-#     dscbs = DSCBS(10, **kwargs)
-#     dscbs.fit(img_train)
-#     bands = dscbs.predict(img_train)
-#     print(bands.shape)
-#
-#
-#
-#     # CAE = ConvAE(n_input=n_input, n_hidden=n_hidden, reg_const1=reg1, reg_const2=reg2, kernel_size=kernel_size,
-#     #              batch_size=batch_size_test, model_path=model_path, logs_path=logs_path)
-#
-#     # acc_ = []
-#     # all_loss = []
-#     # all_acc = []
-#     # for i in range(0, 1):
-#     #     # coil20_all_subjs = copy.deepcopy(Img)
-#     #     # coil20_all_subjs = coil20_all_subjs.astype(float)
-#     #     # label_all_subjs = copy.deepcopy(Label)
-#     #     # label_all_subjs = label_all_subjs - label_all_subjs.min() + 1
-#     #     # label_all_subjs = np.squeeze(label_all_subjs)
-#     #     CAE.initlization()
-#     #     # CAE.restore()
-#     #     for iter_ft in range(ft_times):
-#     #         iter_ft = iter_ft + 1
-#     #         C, l1_cost, l2_cost, total_loss = CAE.finetune_fit(img_train, learning_rate)
-#     #         all_loss.append(total_loss)
-#     #         if iter_ft % display_step == 0:
-#     #             print("epoch: %.1d" % iter_ft,
-#     #                   "L1 cost: %.8f, L2 cost: %.8f, total cost: %.8f" % (l1_cost, l2_cost, total_loss))
-#     #             C = thrC(C, alpha)
-#     #             y_x, CKSym_x = post_proC(C, num_class, 1, 4)
-#     #             bands = band_selection(y_x, img)  # n_row * n_clm * n_class
-#     #             score = eval_band(bands, gt, train_inx, test_idx)
-#     #             all_acc.append(score)
-#     #             print('eval score:', score)
-#     #     print(all_loss)
-#     #     print(all_acc)
